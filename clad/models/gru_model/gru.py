@@ -7,9 +7,10 @@ import numpy as np
 import torch
 from torch import nn, optim
 from pydantic import BaseModel, Field
+from clad.models.common.reader import DataReader
 
 from clad.utils import progress_bar, Bar
-from ..common import OneHot, OnehotEmbedding, get_onehot_infos, DataToSequences, UserDataLoader
+from ..common import OneHot, OnehotEmbedding, get_onehot_infos, DataToSequences, UserDataLoader, BaseRunner, DataReader
 
 
 class GruAeModel(nn.Module):
@@ -86,7 +87,7 @@ class GruCLLModel(nn.Module):
         return torch.log_softmax(self.output_fc(x), dim=1)
 
 
-class Model(BaseModel):
+class Model(BaseRunner):
     lr = .1
     sequence = 5
 
@@ -106,19 +107,16 @@ class Model(BaseModel):
     def get_epochs(self, record_num: int):
         return max(1, min(self.epochs, self.max_records // record_num))
 
-    def test(self, dataset_path: Path, output_path: Path):
-        record = pd.read_csv(dataset_path / "test-record.csv").to_numpy(float)
-        onehot = pd.read_csv(dataset_path / "test-onehot.csv").to_numpy(int)
-        user = pd.read_csv(dataset_path / "test-user.csv").to_numpy(int).squeeze()
-        onehot_infos = get_onehot_infos(onehot) if self.embedding else []
+    def test(self, data: DataReader, output_path: Path):
+        onehot_infos = get_onehot_infos(data.onehot) if self.embedding else []
 
-        dl = UserDataLoader([record, onehot], user)
+        dl = UserDataLoader([data.record, data.onehot], data.user)
 
         with output_path.joinpath("test.csv").open('w') as f:
             writer = csv.writer(f)
             writer.writerow(('user', 'actual', 'decision'))
 
-        input_size = record.shape[1]
+        input_size = data.record.shape[1]
 
         with progress_bar(2) as (user_bar, epochs_bar):
             for i, (x, y, anomaly_generator) in enumerate(user_bar.iter(dl)):

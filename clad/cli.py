@@ -1,13 +1,17 @@
 from datetime import datetime
 from enum import Enum
+import json
 from pathlib import Path
 from traceback import format_exc
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel
+from sklearn.metrics import roc_auc_score
 import typer
 
 app = typer.Typer(no_args_is_help=True)
 
-from .models import models
+from .models import models, DataReader
 
 
 class Dataset(str, Enum):
@@ -56,21 +60,39 @@ def run(
         "-o", "--output"),
     data_folder: Path = typer.Option(
         Path("data"),
-        "-d", "--data"),
+        "-d", "--data", help="dataset to be fed into model"),
 ):
     params = Params.parse_file(config_file)
     model = params.get_model()
-    output_folder = output_parent_folder / f"{params.dataset} {params.model} {datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    params.model_params = model.dict()
+    output_folder = output_parent_folder / \
+        f"{params.dataset} {params.model} {datetime.now().strftime('%Y%m%d-%H%M%S')}"
     output_folder.mkdir(parents=True, exist_ok=True)
+    dataset_folder = data_folder / params.dataset.value
 
     try:
-        getattr(model, "train", lambda x, y: 0)(data_folder / params.dataset.value, output_folder)
-        model.test(data_folder / params.dataset.value, output_folder)
+        start = datetime.now()
+        (output_folder / "params.json").write_text(params.json(indent=4))
+        print("training")
+        model.train(DataReader(dataset_folder, "train"), output_folder)
+        print("testing")
+        model.test(DataReader(dataset_folder, "test"), output_folder)
+
+        print("calc auc score")
+        csv = pd.read_csv(output_folder / "test.csv")
+        user_auc = [roc_auc_score(d["actual"], d["decision"]) for user, d in csv.groupby('user')]
+        avg_auc = np.mean(user_auc)
+        td = datetime.now() - start
+
+        (output_folder / "result.json").write_text(json.dumps({
+            "avg_auc": avg_auc,
+            "minutes": td.total_seconds() / 60
+        }, indent=4))
+        print("average auc score:", avg_auc)
+        print("running time (minutes):", td.total_seconds() / 60)
+
     except Exception:
         (output_folder / "error.txt").write_text(format_exc())
         from rich.console import Console
         console = Console()
         console.print_exception()
-
-
-

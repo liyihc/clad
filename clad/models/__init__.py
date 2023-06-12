@@ -1,9 +1,9 @@
-from pydantic import BaseModel
 from typing import Dict, Type
 from .cnn_model import *
 from .gru_model import *
+from .common import BaseRunner, DataReader
 
-models: Dict[str, Type[BaseModel]] = {
+models: Dict[str, Type[BaseRunner]] = {
     "cnn-all": CNN_All_Model,
     "cnn-gm": CNN_GM_Model,
     "cnn-cll": CNN_CLL_Model,

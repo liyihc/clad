@@ -7,11 +7,11 @@ import pandas as pd
 import torch
 from pydantic import BaseModel, Field
 from torch import nn, optim
+from clad.models.common.reader import DataReader
 
 from clad.utils import Bar, progress_bar
 
-from ..common import OneHot, OnehotEmbedding, get_onehot_infos
-from ..common.userdata_loader import DataToSequences, UserDataLoader
+from ..common import OneHot, OnehotEmbedding, get_onehot_infos, DataToSequences, UserDataLoader, BaseRunner, DataReader
 from .cnn_gm import DeepAnTModel
 
 
@@ -43,7 +43,7 @@ class DeepAnTCLLModel(nn.Module):
         return torch.log_softmax(x, dim=1)
 
 
-class Model(BaseModel):
+class Model(BaseRunner):
     lr = .1
     sequence = 5
 
@@ -63,20 +63,16 @@ class Model(BaseModel):
     def get_model(self, *args, **kwds):
         return DeepAnTCLLModel(*args, **kwds)
 
-    def test(self, dataset_path: Path, output_path: Path):
-        record = pd.read_csv(
-            dataset_path / "test-record.csv").to_numpy(np.float32)
-        onehot = pd.read_csv(dataset_path / "test-onehot.csv").to_numpy(int)
-        user = pd.read_csv(dataset_path / "test-user.csv").to_numpy(int).squeeze()
-        onehot_infos = get_onehot_infos(onehot) if self.embedding else []
+    def test(self, data: DataReader, output_path: Path):
+        onehot_infos = get_onehot_infos(data.onehot) if self.embedding else []
 
-        dl = UserDataLoader([record, onehot], user)
+        dl = UserDataLoader(data.values, data.user)
 
         with output_path.joinpath("test.csv").open('w') as f:
             writer = csv.writer(f)
             writer.writerow(('user', 'actual', 'decision'))
 
-        input_size = record.shape[1]
+        input_size = data.record.shape[1]
 
         with progress_bar(2) as (user_bar, epochs_bar):
             for i, (x, y, anomaly_generator) in enumerate(user_bar.iter(dl)):
@@ -181,7 +177,7 @@ class ModelPredict(Model):
     def get_model(self, *args, **kwds):
         return DeepAnTModel(*args, **kwds)
 
-    def _train(self, model: DeepAnTCLLModel, xs: List[np.ndarray], anomaly_generator: Callable[[int], List[np.ndarray]], epoch_bar: Bar):
+    def _train(self, model: DeepAnTModel, xs: List[np.ndarray], anomaly_generator: Callable[[int], List[np.ndarray]], epoch_bar: Bar):
         device = torch.device(self.device)
 
         model.to(device)

@@ -7,10 +7,11 @@ import pandas as pd
 import torch
 from pydantic import BaseModel, Field
 from torch import nn, optim
+from clad.models.common.reader import DataReader
 
 from clad.utils import progress_bar
 
-from ..common import OneHot, SeqDataLoader, get_onehot_infos
+from ..common import OneHot, SeqDataLoader, get_onehot_infos, BaseRunner, DataReader
 from .eval_dataloader import EvalDataLoader
 from .profile_db import ProfileDB
 from .torch_gru import TorchGru
@@ -20,7 +21,7 @@ class ModelInfo(BaseModel):
     onehots: List[OneHot] = []
 
 
-class Model(BaseModel):
+class Model(BaseRunner):
     train_batch = 128
     profile_size = 20
     sequence = 16
@@ -32,7 +33,7 @@ class Model(BaseModel):
     test_batch = 64
     embedding = True
 
-    def train(self, dataset_path: Path, output_path: Path):
+    def train(self, data: DataReader, output_path: Path):
         def loss_log(loss, right, wrong):
             with output_path.joinpath("loss.csv").open('a') as f:
                 writer = csv.writer(f)
@@ -44,13 +45,8 @@ class Model(BaseModel):
 
         device = torch.device(self.device)
 
-        record = pd.read_csv(dataset_path / "train-record.csv").to_numpy(float)
-        onehots = pd.read_csv(dataset_path / "train-onehot.csv").to_numpy(int)
-        values = [record, onehots]
-        user = pd.read_csv(dataset_path / "train-user.csv").to_numpy(int).squeeze()
-
         if self.embedding:
-            onehot_infos = get_onehot_infos(onehots)
+            onehot_infos = get_onehot_infos(data.onehot)
         else:
             onehot_infos = []
 
@@ -58,7 +54,7 @@ class Model(BaseModel):
         with output_path.joinpath('model-info.json').open('w') as f:
             f.write(info.json())
 
-        input_size = record.shape[1]
+        input_size = data.record.shape[1]
         tf32 = torch.float32
 
         gru = TorchGru(self.profile_size, input_size, 2, info.onehots)
@@ -73,7 +69,8 @@ class Model(BaseModel):
         default_profile = torch.zeros(self.profile_size, dtype=tf32)
 
         gru.train()
-        dl = SeqDataLoader(values, user, self.sequence, self.train_batch)
+        dl = SeqDataLoader(data.values, data.user,
+                           self.sequence, self.train_batch)
         with progress_bar(2) as (epochs_bar, train_bar):
             for epoch in epochs_bar.range(self.epochs, description="epoch"):
                 profiledb.clear_data()
@@ -126,15 +123,10 @@ class Model(BaseModel):
         gru.cpu()
         torch.save(gru.state_dict(), output_path.joinpath("gru.pth"))
 
-    def test(self, dataset_path: Path, output_path: Path):
+    def test(self, data: DataReader, output_path: Path):
         device = torch.device(self.device)
 
-        record = pd.read_csv(dataset_path / "test-record.csv").to_numpy(float)
-        onehots = pd.read_csv(dataset_path / "test-onehot.csv").to_numpy(int)
-        values = [record, onehots]
-        user = pd.read_csv(dataset_path / "test-user.csv").to_numpy(int).squeeze()
-
-        input_size = record.shape[1]
+        input_size = data.record.shape[1]
 
         tf32 = torch.float32
 
@@ -148,7 +140,7 @@ class Model(BaseModel):
         gru.load_state_dict(state_dict)
         gru.to(device)
 
-        dl = EvalDataLoader(values, user, batch=self.test_batch)
+        dl = EvalDataLoader(data.values, data.user, batch=self.test_batch)
 
         gru.eval()
         with torch.no_grad(), output_path.joinpath("test.csv").open('w') as f:

@@ -2,17 +2,17 @@ import csv
 from pathlib import Path
 from typing import List
 
-import h5py
 import numpy as np
 import pandas as pd
 import torch
 from pydantic import BaseModel, Field
 from sklearn.metrics import roc_curve
 from torch import nn, optim
+from clad.models.common.reader import DataReader
 
 from clad.utils import progress_bar
 
-from ..common import OneHot, OnehotEmbedding, SeqDataLoader, get_onehot_infos
+from ..common import OneHot, OnehotEmbedding, SeqDataLoader, get_onehot_infos, BaseRunner, DataReader
 from .eval_dataloader import EvalDataLoader
 
 
@@ -91,7 +91,7 @@ class SmallDeepAnTModel(nn.Module):
         return torch.relu(predict), actual
 
 
-class Model(BaseModel):
+class Model(BaseRunner):
     train_batch = 128
     sequence = 16
     epochs = 16
@@ -105,7 +105,7 @@ class Model(BaseModel):
     batch_norm = False
     small_model = False
 
-    def train(self, dataset_path: Path, output_path: Path):
+    def train(self, data: DataReader, output_path: Path):
         def loss_log(loss, right):
             with (output_path / "loss.csv").open('a') as f:
                 writer = csv.writer(f)
@@ -114,16 +114,12 @@ class Model(BaseModel):
 
         device = torch.device(self.device)
 
-        record = pd.read_csv(dataset_path / "train-record.csv").to_numpy(float)
-        onehots = pd.read_csv(dataset_path / "train-onehot.csv").to_numpy(int)
-        values = [record, onehots]
-        user = pd.read_csv(dataset_path / "train-user.csv").to_numpy(int).squeeze()
-        onehot_infos = get_onehot_infos(onehots) if self.embedding else []
+        onehot_infos = get_onehot_infos(data.onehot) if self.embedding else []
         info = ModelInfo(onehots=onehot_infos)
         with output_path.joinpath('model-info.json').open('w') as f:
             f.write(info.json(indent=4))
 
-        input_size = record.shape[1]
+        input_size = data.record.shape[1]
 
         ModelType = DeepAnTModel if not self.small_model else SmallDeepAnTModel
         model = ModelType(input_size, info.onehots, self.batch_norm)
@@ -136,7 +132,7 @@ class Model(BaseModel):
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=.5)
 
         model.train()
-        dl = SeqDataLoader(values, user, self.sequence, self.train_batch)
+        dl = SeqDataLoader(data.values, data.user, self.sequence, self.train_batch)
         if self.user_limit:
             dl.pos = dl.pos[:min(self.user_limit, len(dl.pos))]
         with progress_bar(2) as (epochs_bar, train_bar):
@@ -171,15 +167,11 @@ class Model(BaseModel):
         model.cpu()
         torch.save(model.state_dict(), output_path / "model.pth")
 
-    def test(self, dataset_path: Path, output_path: Path):
+    
+    def test(self, data: DataReader, output_path: Path):
         device = torch.device(self.device)
 
-        record = pd.read_csv(dataset_path / "test-record.csv").to_numpy(float)
-        onehots = pd.read_csv(dataset_path / "test-onehot.csv").to_numpy(int)
-        values = [record, onehots]
-        user = pd.read_csv(dataset_path / "test-user.csv").to_numpy(int).squeeze()
-
-        input_size = record.shape[1]
+        input_size = data.record.shape[1]
 
         info = ModelInfo.parse_file(output_path / 'model-info.json')
         ModelType = DeepAnTModel if not self.small_model else SmallDeepAnTModel
@@ -188,7 +180,7 @@ class Model(BaseModel):
         model.to(device)
 
         # dl = EvalDataLoader(values, user, self.sequence, self.test_batch)
-        dl = SeqDataLoader(values, user, self.sequence, self.test_batch)
+        dl = SeqDataLoader(data.values, data.user, self.sequence, self.test_batch)
         if self.user_limit:
             dl.pos = dl.pos[:min(self.user_limit, len(dl.pos))]
 

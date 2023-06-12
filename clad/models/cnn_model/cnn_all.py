@@ -7,9 +7,10 @@ import pandas as pd
 import torch
 from torch import nn, optim
 from pydantic import BaseModel
+from clad.models.common.reader import DataReader
 
 from clad.utils import progress_bar
-from ..common import OneHot, OnehotEmbedding, get_onehot_infos, SeqDataLoader
+from ..common import OneHot, OnehotEmbedding, get_onehot_infos, SeqDataLoader, BaseRunner, DataReader
 from .eval_dataloader import EvalDataLoader
 
 
@@ -50,7 +51,7 @@ class CNNAllModel(nn.Module):
         return torch.log_softmax(x, dim=1)
 
 
-class Model(BaseModel):
+class Model(BaseRunner):
     train_batch = 128
     sequence = 16
     epochs = 16
@@ -61,7 +62,7 @@ class Model(BaseModel):
     test_batch = 256
     embedding = True
 
-    def train(self, dataset_path: Path, output_path: Path):
+    def train(self, data: DataReader, output_path: Path):
         def loss_log(loss, right, wrong):
             with output_path.joinpath("loss.csv").open('a') as f:
                 writer = csv.writer(f)
@@ -73,20 +74,15 @@ class Model(BaseModel):
 
         device = torch.device(self.device)
 
-        record = pd.read_csv(dataset_path / "train-record.csv").to_numpy(np.float32)
-        onehots = pd.read_csv(dataset_path / "train-onehot.csv").to_numpy(int)
-        values = [record, onehots]
-        user = pd.read_csv(dataset_path / "train-user.csv").to_numpy(int).squeeze()
-
         if self.embedding:
-            onehot_infos = get_onehot_infos(onehots)
+            onehot_infos = get_onehot_infos(data.onehot)
         else:
             onehot_infos = []
         info = ModelInfo(onehots=onehot_infos)
         with output_path.joinpath('model-info.json').open('w') as f:
             f.write(info.json())
 
-        model = CNNAllModel(record.shape[1], info.onehots)
+        model = CNNAllModel(data.record.shape[1], info.onehots)
         model.to(device)
 
         criterion = nn.NLLLoss()
@@ -96,7 +92,7 @@ class Model(BaseModel):
         scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=.5)
 
         model.train()
-        dl = SeqDataLoader(values, user, self.sequence, self.train_batch)
+        dl = SeqDataLoader(data.values, data.user, self.sequence, self.train_batch)
         with progress_bar(2) as (epochs_bar, train_bar):
             for epoch in epochs_bar.range(self.epochs, description="epoch"):
                 total_loss = 0
@@ -144,20 +140,15 @@ class Model(BaseModel):
         model.cpu()
         torch.save(model.state_dict(), output_path.joinpath("model.pth"))
 
-    def test(self, dataset_path: Path, output_path: Path):
+    def test(self, data: DataReader, output_path: Path):
         device = torch.device(self.device)
 
-        record = pd.read_csv(dataset_path / "train-record.csv").to_numpy(float)
-        onehots = pd.read_csv(dataset_path / "train-onehot.csv").to_numpy(int)
-        values = [record, onehots]
-        user = pd.read_csv(dataset_path / "train-user.csv").to_numpy(int).squeeze()
-
         info = ModelInfo.parse_file(output_path.joinpath('model-info.json'))
-        model = CNNAllModel(record.shape[1], info.onehots)
+        model = CNNAllModel(data.record.shape[1], info.onehots)
         model.load_state_dict(torch.load(output_path.joinpath("model.pth")))
         model.to(device)
 
-        dl = EvalDataLoader(values, user, self.sequence, batch=self.test_batch)
+        dl = EvalDataLoader(data.values, data.user, self.sequence, batch=self.test_batch)
 
         model.eval()
         with torch.no_grad(), output_path.joinpath("test.csv").open('w') as f:
