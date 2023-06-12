@@ -4,6 +4,7 @@ You can use the `requirements.txt` file or can use packages with the same major 
 
 # Usage
 
+- download this repository
 - prepare your python environment with pytorch cuda support. (I recommend to use conda)
 - generate config file.
   ```bash
